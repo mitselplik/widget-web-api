@@ -1,39 +1,47 @@
-using Microsoft.AspNet.OData;
-using Microsoft.AspNet.OData.Builder;
+using AutoMapper;
+using Microsoft.AspNet.OData.Batch;
 using Microsoft.AspNet.OData.Extensions;
+using Microsoft.AspNet.OData.Formatter.Deserialization;
+using Microsoft.AspNet.OData.Routing.Conventions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.OData.Edm;
-using System;
-using System.Linq;
-using WidgetWebAPI.Models;
+using Microsoft.OData;
+using PacsNext.WebApi.Support;
+using System.Collections.Generic;
+using WidgetWebAPI.Domain;
+using WidgetWebAPI.Support;
 
 namespace WidgetWebAPI
 {
 	public class Startup
 	{
-		public Startup(IConfiguration configuration)
+		#region Constructor(s)
+
+		public Startup(IConfiguration configuration, IWebHostEnvironment environment)
 		{
 			Configuration = configuration;
+			CurrentEnvironment = environment;
 		}
 
-		public IConfiguration Configuration { get; }
+		#endregion
+
+		#region Private Properties
+
+		private IConfiguration Configuration { get; }
+		private IWebHostEnvironment CurrentEnvironment { get; }
+
+		#endregion
 
 		// This method gets called by the runtime. Use this method to add services to the container.
 		public void ConfigureServices(IServiceCollection services)
 		{
-			// See note on https://devblogs.microsoft.com/odata/experimenting-with-odata-in-asp-net-core-3-1/
-			// Disabling end-point routing isn't ideal, but is required for the current implementation of OData 
-			// (7.4.0 as of this comment).  As OData is further updated, this will change.
-			//services.AddControllers();
-			services.AddControllers(mvcOoptions => mvcOoptions.EnableEndpointRouting = false);
-
-			services.AddDbContext<Models.WidgetDBContext>(optionsBuilder =>
+			services.AddOData();
+			services.AddControllers();
+			services.AddDbContext<Data.WidgetDBContext>(optionsBuilder =>
 			{
 				if (!optionsBuilder.IsConfigured)
 				{
@@ -41,7 +49,9 @@ namespace WidgetWebAPI
 				}
 			});
 
-			services.AddOData();
+			services
+				.AddAutoMapper(this.GetType().Assembly)
+				.AddScoped<DomainContext, DomainContext>();
 		}
 
 		// This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -53,51 +63,42 @@ namespace WidgetWebAPI
 			}
 
 			app.UseHttpsRedirection();
+			// Add "UseODataBatching()" before "UseRouting()" to support OData $batch.
+			app.UseODataBatching();
 			app.UseRouting();
 			app.UseAuthorization();
 
-			// Again, this is temporary due to current OData implementation.  See note above.
-			//app.UseEndpoints(endpoints =>
-			//{
-			//    endpoints.MapControllers();
-			//});
-
-			//IRouteBuilder theNaughtyRouteBuilder = null;
-
-			app.UseMvc(routeBuilder =>
+			app.UseEndpoints(endpoints =>
 			{
-				// the following will not work as expected
-				// BUG: https://github.com/OData/WebApi/issues/1837
-				// routeBuilder.SetDefaultODataOptions(new ODataOptions { UrlKeyDelimiter = Microsoft.OData.ODataUrlKeyDelimiter.Parentheses });
-				var options = routeBuilder.ServiceProvider.GetRequiredService<ODataOptions>();
-				options.UrlKeyDelimiter = Microsoft.OData.ODataUrlKeyDelimiter.Parentheses;
+				endpoints.MapControllers();
+				//endpoints.MapODataRoute("odata", "odata", new PropertyModelBuilder(app.ApplicationServices).GetEdmModel());
+				endpoints.MapODataRoute("odata", "odata",
+					b =>
+					{
+						b.AddService(Microsoft.OData.ServiceLifetime.Singleton,
+							sp => new DomainModelBuilder(app.ApplicationServices).GetEdmModel());
 
-				routeBuilder.MapODataServiceRoute("odata", "odata", GetEdmModel());
+						b.AddService<ODataDeserializerProvider>(Microsoft.OData.ServiceLifetime.Singleton,
+							sp => new EntityReferenceODataDeserializerProvider(sp));
 
-				//theNaughtyRouteBuilder = routeBuilder;
+						b.AddService<ODataBatchHandler>(Microsoft.OData.ServiceLifetime.Singleton,
+							sp => new TransactionedODataBatchHandler());
+
+						b.AddService<IEnumerable<IODataRoutingConvention>>(Microsoft.OData.ServiceLifetime.Singleton,
+							sp =>
+							{
+								var routingConventions = ODataRoutingConventions.CreateDefaultWithAttributeRouting("odata", endpoints.ServiceProvider);
+								// THIS DOES NOT WORK:
+								// With attribute routing in place, this class no longer works.  Running the app immediately throws an
+								// exception if I uncomment and attempt to use the [ODataRoute] attribute like this:
+								// [ODataRoute("Supplier({keySupplierId})/Part({keyPartId})")]
+
+								//routingConventions.Insert(0, new NavigationIndexRoutingConvention());
+								//routingConventions.Add(new NavigationIndexRoutingConvention());
+								return routingConventions;
+							});
+					});
 			});
-
-			//IRouter theNaughtyRouter = theNaughtyRouteBuilder.Routes[0];
-			//theNaughtyRouteBuilder.Routes.RemoveAt(0);
-			//theNaughtyRouteBuilder.Routes.Add(theNaughtyRouter);
-			//app.UseRouter(theNaughtyRouteBuilder.Build());
-			
-		}
-
-		private IEdmModel GetEdmModel()
-		{
-			var builder = new ODataConventionModelBuilder();
-			builder.Namespace = "WidgetData";   // Hide Model Schema from $metadata
-			builder.EntitySet<Widget>("Widget").EntityType
-				.HasKey(r => r.WidgetId)
-				.Filter()   // Allow for the $filter Command
-				.Count()    // Allow for the $count Command
-				.Expand()   // Allow for the $expand Command
-				.OrderBy()  // Allow for the $orderby Command
-				.Page()     // Allow for the $top and $skip Commands
-				.Select();  // Allow for the $select Command;
-
-			return builder.GetEdmModel();
 		}
 	}
 }

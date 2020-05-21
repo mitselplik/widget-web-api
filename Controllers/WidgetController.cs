@@ -1,109 +1,62 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-using Microsoft.AspNet.OData;
+﻿using Microsoft.AspNet.OData;
 using Microsoft.AspNet.OData.Routing;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using WidgetWebAPI.Models;
+using System.Linq;
+using WidgetWebAPI.Domain;
 
 namespace WidgetWebAPI.Controllers
 {
-    [Route("api/[controller]")]
-    [ApiController]
-    [ODataRoutePrefix("Widget")]
-    public class WidgetController : ODataController // ControllerBase
-    {
-        private readonly WidgetDBContext _context;
+	public class WidgetController : ODataController
+	{
+		private readonly DomainContext _context;
 
-        public WidgetController(WidgetDBContext context)
-        {
-            _context = context;
-        }
+		public WidgetController(DomainContext context)
+		{
+			_context = context;
+		}
 
-        [HttpGet]
-        [EnableQuery]
-        public IQueryable<Widget> GetWidget() => _context.Widget.AsQueryable();
+		// Return all Widgets
+		[EnableQuery(PageSize = 100, MaxExpansionDepth = 3, MaxAnyAllExpressionDepth = 3)]
+		public IQueryable<Widget> Get() => _context.Widget.AsQueryable();
 
-        //[HttpGet("{id}")]
-        //[EnableQuery]
-        //public Widget GetSingleWidget([FromODataUri] int id) => _context.Widget.Find(id);
+		// Return specific Widget
+		[EnableQuery(PageSize = 100, MaxExpansionDepth = 3, MaxAnyAllExpressionDepth = 3)]
+		public IQueryable<Widget> Get([FromODataUri] int keyWidgetId) => _context.Widget.Where(e => e.WidgetId == keyWidgetId);
 
+		// Return List of Widget Parts
+		[EnableQuery(PageSize = 100, MaxExpansionDepth = 3, MaxAnyAllExpressionDepth = 3)]
+		[ODataRoute("Widget({keyWidgetId})/Part")]
+		public IQueryable<WidgetPart> GetParts([FromODataUri] int keyWidgetId) => _context.WidgetPart.Where(e => e.WidgetId == keyWidgetId);
 
-        [EnableQuery]
-        [ODataRoute("({id})", RouteName = nameof(GetSingleWidget))]
-        public async Task<IActionResult> GetSingleWidget([FromODataUri] int id)
-        {
-            var widget = await _context.Widget.FindAsync(id);
-            return Ok(widget);
-        }
+		// Get List of a specific Part - there can be multiple, each with a distinct BlueprintId where the part is installed.
 
+		// THIS DOESN'T WORK:
+		// This kind of query would represent a partial key match.  The same can be achieved using a querystring though:
+		// ~/odata/Widget(5)?$expand=Part($filter=Part eq 10)
 
-        // PUT: api/Widget/5
-        // To protect from overposting attacks, enable the specific properties you want to bind to, for
-        // more details, see https://go.microsoft.com/fwlink/?linkid=2123754.
-        [HttpPut("{id}")]
-        public async Task<IActionResult> PutWidget(int id, Widget widget)
-        {
-            if (id != widget.WidgetId)
-            {
-                return BadRequest();
-            }
+		// I'd like to be able to have the above using this url instead:
+		// ~/odata/Widget(5)/Part(10)
 
-            _context.Entry(widget).State = EntityState.Modified;
+		// Even though this doesn't follow the OData Convention, it would be nice to be able to return a sub-set
+		// of the child collection based on a partial key match.
+		// But neither of these work since they represent a partial key.
+		[EnableQuery(PageSize = 100, MaxExpansionDepth = 3, MaxAnyAllExpressionDepth = 3)]
+		// [ODataRoute("Widget({keyWidgetId})/Part({keyPartId})")]
+		// [ODataRoute("Widget({keyWidgetId})/Part({keyWidgetId}, {keyPartId})")]
 
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                if (!WidgetExists(id))
-                {
-                    return NotFound();
-                }
-                else
-                {
-                    throw;
-                }
-            }
-
-            return NoContent();
-        }
-
-        // POST: api/Widget
-        // To protect from overposting attacks, enable the specific properties you want to bind to, for
-        // more details, see https://go.microsoft.com/fwlink/?linkid=2123754.
-        [HttpPost]
-        public async Task<ActionResult<Widget>> PostWidget(Widget widget)
-        {
-            _context.Widget.Add(widget);
-            await _context.SaveChangesAsync();
-
-            return CreatedAtAction("GetWidget", new { id = widget.WidgetId }, widget);
-        }
-
-        // DELETE: api/Widget/5
-        [HttpDelete("{id}")]
-        public async Task<ActionResult<Widget>> DeleteWidget(int id)
-        {
-            var widget = await _context.Widget.FindAsync(id);
-            if (widget == null)
-            {
-                return NotFound();
-            }
-
-            _context.Widget.Remove(widget);
-            await _context.SaveChangesAsync();
-
-            return widget;
-        }
-
-        private bool WidgetExists(int id)
-        {
-            return _context.Widget.Any(e => e.WidgetId == id);
-        }
-    }
+		// BUT THIS DOES WORK:
+		// https://localhost:44316/odata/Widget(3)/Part(3,20,0)		-- Set of Items with this PartId
+		// https://localhost:44316/odata/Widget(3)/Part(3,20,4)		-- This specific Part
+		[ODataRoute("Widget({keyWidgetId})/Part({keyWidgetId}, {keyPartId}, {keyBlueprintId})")]
+		public object GetPartList([FromODataUri] int keyWidgetId, [FromODataUri] int keyPartId, [FromODataUri] int keyBlueprintId = 0)
+		{
+			if (keyBlueprintId == 0)
+			{
+				return _context.WidgetPart.Where(e => e.WidgetId == keyWidgetId && e.PartId == keyPartId);
+			}
+			else
+			{
+				return _context.WidgetPart.FirstOrDefault(e => e.WidgetId == keyWidgetId && e.PartId == keyPartId && e.BlueprintId == keyBlueprintId);
+			}
+		}
+	}
 }
